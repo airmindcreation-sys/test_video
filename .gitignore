@@ -1,0 +1,60 @@
+# Actor Face Swap Studio - Fichiers à ignorer
+
+# Dossiers de l'application
+uploads/
+outputs/
+temp/
+.models/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environnements virtuels
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Gradio
+flagged/
+gradio_cached_examples/
+
+# FaceFusion
+facefusion/.jobs/
+facefusion/.models/
+facefusion/temp/
+
+# Fichiers temporaires
+*.tmp
+*.temp
