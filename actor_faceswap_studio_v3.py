@@ -191,6 +191,27 @@ class FaceSwapConfig:
             "face_swapper_model": "hyperswap_1b_256",
             "reference_face_distance": 0.6,
             "output_video_quality": 80
+        },
+        "with_lip_sync": {
+            "name": "11_Avec Lip Sync - InSwapper + CodeFormer",
+            "processors": ["face_swapper", "face_enhancer", "lip_syncer"],
+            "face_swapper_model": "inswapper_128_fp16",
+            "face_enhancer_model": "codeformer",
+            "face_enhancer_blend": 80,
+            "lip_syncer_model": "wav2lip_gan_96",
+            "reference_face_distance": 0.6,
+            "output_video_quality": 95
+        },
+        "lip_sync_hyperswap": {
+            "name": "12_Lip Sync + HyperSwap - Haute Qualité",
+            "processors": ["face_swapper", "face_enhancer", "lip_syncer"],
+            "face_swapper_model": "hyperswap_1b_256",
+            "face_swapper_pixel_boost": "1024x1024",
+            "face_enhancer_model": "codeformer",
+            "face_enhancer_blend": 85,
+            "lip_syncer_model": "wav2lip_gan_96",
+            "reference_face_distance": 0.6,
+            "output_video_quality": 95
         }
     }
 
@@ -422,6 +443,103 @@ class FaceSwapProcessor:
         progress(1.0, desc="✅ Tests terminés!")
 
         return summary, video_paths, str(session_dir)
+
+    def process_video_simple(self, source_image: str, target_video: str,
+                            face_swapper_model: str, pixel_boost: str,
+                            face_enhancer_enabled: bool, face_enhancer_model: str, face_enhancer_blend: float,
+                            frame_enhancer_enabled: bool, frame_enhancer_model: str,
+                            lip_sync_enabled: bool, lip_sync_model: str,
+                            reference_distance: float, execution_provider: str, quality: int,
+                            progress=gr.Progress()) -> Tuple[Optional[str], str]:
+        """Traite une vidéo avec les paramètres simples"""
+
+        valid, message = self.validate_inputs(source_image, target_video)
+        if not valid:
+            return None, message
+
+        progress(0.1, desc="🔍 Validation...")
+
+        # Output
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"faceswap_{Path(target_video).stem}_{timestamp}.mp4"
+        output_path = str(OUTPUTS_DIR / output_filename)
+
+        # Build config
+        processors = ['face_swapper']
+        if face_enhancer_enabled:
+            processors.append('face_enhancer')
+        if frame_enhancer_enabled:
+            processors.append('frame_enhancer')
+        if lip_sync_enabled:
+            processors.append('lip_syncer')
+
+        config = {
+            'processors': processors,
+            'face_swapper_model': face_swapper_model,
+            'face_swapper_pixel_boost': pixel_boost,
+            'reference_face_distance': reference_distance,
+            'output_video_quality': quality,
+            'execution_provider': execution_provider
+        }
+
+        if face_enhancer_enabled:
+            config['face_enhancer_model'] = face_enhancer_model
+            config['face_enhancer_blend'] = int(face_enhancer_blend)
+
+        if frame_enhancer_enabled:
+            config['frame_enhancer_model'] = frame_enhancer_model
+
+        if lip_sync_enabled:
+            config['lip_syncer_model'] = lip_sync_model
+
+        # Extraction audio si lip sync
+        audio_path = None
+        if lip_sync_enabled:
+            progress(0.25, desc="🎵 Extraction audio...")
+            ok, audio_path = self.extract_audio(target_video)
+            if not ok:
+                return None, "❌ Échec extraction audio. Vérifiez que la vidéo contient de l'audio."
+
+        progress(0.35, desc="⚙️ Construction commande...")
+
+        # Build command
+        cmd = self.build_command(config, source_image, target_video, output_path, audio_path)
+
+        print(f"\n🚀 Commande FaceFusion:")
+        print(f"   {' '.join(cmd[:15])}...\n")
+
+        progress(0.45, desc="🎬 Traitement FaceFusion...")
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(FACEFUSION_DIR))
+
+            if result.returncode == 0 and os.path.exists(output_path):
+                # Fusion audio si nécessaire
+                if audio_path:
+                    progress(0.92, desc="🔊 Fusion audio...")
+                    self.merge_audio_into_video(output_path, audio_path)
+
+                file_size = os.path.getsize(output_path) / (1024 * 1024)
+
+                progress(1.0, desc="✅ Terminé!")
+
+                success_msg = f"""✅ Face Swap Terminé !
+
+📁 Fichier: {output_filename}
+💾 Taille: {file_size:.2f} MB
+📂 Dossier: {OUTPUTS_DIR}
+
+{'🎤 Lip Sync activé' if lip_sync_enabled else ''}
+{'✨ Face Enhancer activé' if face_enhancer_enabled else ''}
+{'🖼️ Frame Enhancer activé' if frame_enhancer_enabled else ''}
+"""
+                return output_path, success_msg
+            else:
+                error_msg = result.stderr[:500] if result.stderr else "Erreur inconnue"
+                return None, f"❌ Erreur lors du traitement:\n{error_msg}"
+
+        except Exception as e:
+            return None, f"❌ Exception: {str(e)}"
 
     def run_custom_batch_tests(self, source_image: str, target_video: str,
                                custom_configs_data: List[Dict], progress=gr.Progress()) -> Tuple[str, List, str]:
@@ -745,10 +863,6 @@ def create_gradio_interface():
         """)
 
         # Event handlers
-        def simple_face_swap_wrapper(*args):
-            # TODO: Implémenter
-            return None, "Fonction simple en cours d'implémentation. Utilisez V2 pour l'instant."
-
         def run_custom_tests_wrapper(source, target, *config_values):
             """Wrapper pour collecter les valeurs des 5 configs et lancer les tests"""
             # config_values contient 14 valeurs par config (5 configs = 70 valeurs)
@@ -779,8 +893,15 @@ def create_gradio_interface():
             return processor.run_custom_batch_tests(source, target, configs_data)
 
         simple_btn.click(
-            fn=simple_face_swap_wrapper,
-            inputs=[],
+            fn=processor.process_video_simple,
+            inputs=[
+                simple_source, simple_target,
+                simple_face_swapper, simple_pixel_boost,
+                simple_face_enhancer_enable, simple_face_enhancer, simple_face_enhancer_blend,
+                simple_frame_enhancer_enable, simple_frame_enhancer,
+                simple_lip_sync_enable, simple_lip_sync_model,
+                simple_reference_distance, simple_execution_provider, simple_quality
+            ],
             outputs=[simple_output_video, simple_output_msg]
         )
 
