@@ -168,13 +168,30 @@ class FaceSwapProcessor:
                 'face_swapper_weight': swap_weight,
                 'face_mask_types': mask_types if mask_types else ['occlusion'],
                 'face_mask_blur': mask_blur,
+                'face_mask_padding': [0, 0, 0, 0],
                 'execution_providers': [execution_provider],
                 'execution_thread_count': 4,
+                'execution_device_ids': ['0'],
+                'face_detector_model': 'yolo_face',
+                'face_detector_size': '640x640',
+                'face_detector_score': 0.5,
+                'face_landmarker_model': '2dfan4',
+                'face_landmarker_score': 0.5,
+                'face_selector_mode': 'one',
+                'face_selector_order': 'large-small',
+                'reference_face_distance': 0.6,
+                'download_providers': ['github', 'huggingface'],
+                'download_scope': 'full',
                 'output_video_quality': 85,
                 'output_video_encoder': 'libx264',
+                'output_video_preset': 'medium',
                 'temp_path': str(TEMP_DIR),
+                'temp_frame_format': 'jpg',
                 'keep_temp': False,
-                'log_level': 'info'
+                'log_level': 'info',
+                'skip_audio': False,
+                'trim_frame_start': None,
+                'trim_frame_end': None
             }
 
             # Ajouter face_enhancer si activé
@@ -191,23 +208,50 @@ class FaceSwapProcessor:
 
             progress(0.3, desc="🎭 Initialisation des processeurs...")
 
-            # Appliquer la configuration
-            apply_args(config, state_manager.init_item)
+            # Appliquer la configuration avec logs
+            try:
+                print(f"\n📝 Configuration à appliquer:")
+                print(f"   Processors: {config['processors']}")
+                print(f"   Source: {config['source_paths']}")
+                print(f"   Target: {config['target_path']}")
+                print(f"   Output: {config['output_path']}")
+                print(f"   Face swapper model: {config.get('face_swapper_model')}")
+
+                apply_args(config, state_manager.init_item)
+                print("✅ Configuration appliquée\n")
+            except Exception as e:
+                import traceback
+                print(f"❌ ERREUR config:\n{traceback.format_exc()}")
+                return None, f"❌ Erreur config: {str(e)}"
 
             progress(0.4, desc="🚀 Lancement du traitement...")
 
             # Import du workflow
             from facefusion.workflows import image_to_video
-
-            # Pré-vérifications
-            if not image_to_video.pre_check():
-                return None, "❌ Erreur lors de la vérification des prérequis"
+            from time import time
 
             progress(0.5, desc="🎬 Traitement de la vidéo en cours...")
 
-            # Traitement
-            if not image_to_video.run():
-                return None, "❌ Erreur lors du traitement de la vidéo"
+            # Traitement avec la fonction process() et logs détaillés
+            try:
+                print("🚀 Démarrage du traitement...")
+                start_time = time()
+
+                print(f"\n📝 State manager check:")
+                print(f"   processors: {state_manager.get_item('processors')}")
+                print(f"   source_paths: {state_manager.get_item('source_paths')}")
+                print(f"   target_path: {state_manager.get_item('target_path')}\n")
+
+                error_code = image_to_video.process(start_time)
+                print(f"\n✅ Traitement terminé avec code: {error_code}\n")
+
+                if error_code != 0:
+                    return None, f"❌ Erreur lors du traitement (code: {error_code})"
+            except Exception as e:
+                import traceback
+                error_trace = traceback.format_exc()
+                print(f"\n❌ ERREUR DÉTAILLÉE:\n{error_trace}\n")
+                return None, f"❌ Erreur: {str(e)}\n\n⚠️ Voir les logs dans le terminal pour plus de détails."
 
             progress(0.9, desc="🎉 Finalisation...")
 
