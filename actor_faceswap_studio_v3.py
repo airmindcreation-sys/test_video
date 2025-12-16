@@ -450,12 +450,12 @@ class FaceSwapProcessor:
                             frame_enhancer_enabled: bool, frame_enhancer_model: str,
                             lip_sync_enabled: bool, lip_sync_model: str,
                             reference_distance: float, execution_provider: str, quality: int,
-                            progress=gr.Progress()) -> Tuple[Optional[str], str]:
+                            progress=gr.Progress()) -> Tuple[Optional[str], str, Optional[str]]:
         """Traite une vidéo avec les paramètres simples"""
 
         valid, message = self.validate_inputs(source_image, target_video)
         if not valid:
-            return None, message
+            return None, message, None
 
         progress(0.1, desc="🔍 Validation...")
 
@@ -498,7 +498,7 @@ class FaceSwapProcessor:
             progress(0.25, desc="🎵 Extraction audio...")
             ok, audio_path = self.extract_audio(target_video)
             if not ok:
-                return None, "❌ Échec extraction audio. Vérifiez que la vidéo contient de l'audio."
+                return None, "❌ Échec extraction audio. Vérifiez que la vidéo contient de l'audio.", None
 
         progress(0.35, desc="⚙️ Construction commande...")
 
@@ -533,13 +533,13 @@ class FaceSwapProcessor:
 {'✨ Face Enhancer activé' if face_enhancer_enabled else ''}
 {'🖼️ Frame Enhancer activé' if frame_enhancer_enabled else ''}
 """
-                return output_path, success_msg
+                return output_path, success_msg, output_path
             else:
                 error_msg = result.stderr[:500] if result.stderr else "Erreur inconnue"
-                return None, f"❌ Erreur lors du traitement:\n{error_msg}"
+                return None, f"❌ Erreur lors du traitement:\n{error_msg}", None
 
         except Exception as e:
-            return None, f"❌ Exception: {str(e)}"
+            return None, f"❌ Exception: {str(e)}", None
 
     def run_custom_batch_tests(self, source_image: str, target_video: str,
                                custom_configs_data: List[Dict], progress=gr.Progress()) -> Tuple[str, List, str]:
@@ -733,8 +733,12 @@ def create_gradio_interface():
                         simple_quality = gr.Slider(0, 100, value=90, label="Output Quality")
 
                 simple_btn = gr.Button("🚀 Lancer Face Swap", variant="primary", size="lg")
-                simple_output_video = gr.Video(label="📹 Résultat")
-                simple_output_msg = gr.Textbox(label="Status", lines=5)
+
+                with gr.Row():
+                    simple_output_video = gr.Video(label="📹 Résultat", height=300)
+                    simple_output_msg = gr.Textbox(label="Status", lines=10)
+
+                simple_download_btn = gr.File(label="💾 Télécharger la vidéo", interactive=False)
 
             # ==================== ONGLET 2: TEST EN GROUPE ====================
             with gr.Tab("🧪 Test en Groupe"):
@@ -765,22 +769,34 @@ def create_gradio_interface():
                             with gr.Column(scale=2):
                                 gr.Markdown("### 📊 Résultats")
                                 batch_predefined_summary = gr.Textbox(label="Résumé", lines=8)
-                                batch_predefined_gallery = gr.Gallery(label="📹 Vidéos", columns=3, height="auto")
-                                batch_predefined_player = gr.Video(label="🎬 Lecteur", interactive=False)
+                                batch_predefined_gallery = gr.Gallery(label="📹 Vidéos", columns=3, height=400)
+                                batch_predefined_player = gr.Video(label="🎬 Lecteur", interactive=False, height=300)
                                 batch_predefined_path = gr.Textbox(label="📂 Dossier", interactive=False)
 
                     # ========== Configs Personnalisées ==========
                     with gr.Tab("⚙️ Configs Personnalisées"):
                         gr.Markdown("""
                         ### ⚙️ Créer vos propres configurations
-                        Créez jusqu'à 5 configurations personnalisées
+                        Créez jusqu'à 15 configurations personnalisées
                         """)
+
+                        # Sélecteur de nombre de configs
+                        with gr.Row():
+                            num_configs_slider = gr.Slider(
+                                minimum=1,
+                                maximum=15,
+                                step=1,
+                                value=3,
+                                label="Nombre de configurations à créer",
+                                info="Ajustez pour afficher plus ou moins de configurations"
+                            )
+                            update_configs_btn = gr.Button("🔄 Mettre à jour", size="sm")
 
                         custom_configs_list = []
 
-                        # Créer 5 configurations fixes
-                        for i in range(5):
-                            with gr.Accordion(f"Configuration {i+1}", open=(i == 0)):
+                        # Créer 15 configurations (masquées par défaut)
+                        for i in range(15):
+                            with gr.Accordion(f"Configuration {i+1}", open=(i == 0), visible=(i < 3)) as accordion:
                                 with gr.Row():
                                     cc_enabled = gr.Checkbox(label=f"Activer Config {i+1}", value=(i < 2))
 
@@ -829,6 +845,7 @@ def create_gradio_interface():
                                         )
 
                                 custom_configs_list.append({
+                                    'accordion': accordion,
                                     'enabled': cc_enabled,
                                     'name': cc_name,
                                     'face_swapper': cc_face_swapper,
@@ -852,8 +869,8 @@ def create_gradio_interface():
                             with gr.Column():
                                 custom_summary = gr.Textbox(label="Résumé", lines=8)
                             with gr.Column(scale=2):
-                                custom_gallery = gr.Gallery(label="📹 Vidéos", columns=3, height="auto")
-                                custom_player = gr.Video(label="🎬 Lecteur", interactive=False)
+                                custom_gallery = gr.Gallery(label="📹 Vidéos", columns=3, height=400)
+                                custom_player = gr.Video(label="🎬 Lecteur", interactive=False, height=300)
                                 custom_path = gr.Textbox(label="📂 Dossier", interactive=False)
 
         # Footer
@@ -863,15 +880,22 @@ def create_gradio_interface():
         """)
 
         # Event handlers
+        def update_config_visibility(num_configs):
+            """Affiche/masque les accordions selon le nombre choisi"""
+            updates = []
+            for i in range(15):
+                updates.append(gr.Accordion(visible=(i < num_configs)))
+            return updates
+
         def run_custom_tests_wrapper(source, target, *config_values):
-            """Wrapper pour collecter les valeurs des 5 configs et lancer les tests"""
-            # config_values contient 14 valeurs par config (5 configs = 70 valeurs)
+            """Wrapper pour collecter les valeurs des 15 configs et lancer les tests"""
+            # config_values contient 14 valeurs par config (15 configs = 210 valeurs)
             # enabled, name, face_swapper, pixel_boost, use_face_enh, face_enh_model, face_enh_blend,
             # use_frame_enh, frame_enh_model, use_lip_sync, lip_sync_model, distance, quality, exec_provider
 
             configs_data = []
             num_fields = 14
-            for i in range(5):
+            for i in range(15):
                 offset = i * num_fields
                 configs_data.append({
                     'enabled': config_values[offset],
@@ -892,6 +916,13 @@ def create_gradio_interface():
 
             return processor.run_custom_batch_tests(source, target, configs_data)
 
+        # Handler pour le bouton de mise à jour
+        update_configs_btn.click(
+            fn=update_config_visibility,
+            inputs=[num_configs_slider],
+            outputs=[cfg['accordion'] for cfg in custom_configs_list]
+        )
+
         simple_btn.click(
             fn=processor.process_video_simple,
             inputs=[
@@ -902,7 +933,7 @@ def create_gradio_interface():
                 simple_lip_sync_enable, simple_lip_sync_model,
                 simple_reference_distance, simple_execution_provider, simple_quality
             ],
-            outputs=[simple_output_video, simple_output_msg]
+            outputs=[simple_output_video, simple_output_msg, simple_download_btn]
         )
 
         batch_predefined_btn.click(
