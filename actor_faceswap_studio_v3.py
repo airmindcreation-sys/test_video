@@ -11,6 +11,7 @@ from typing import Optional, Tuple, List, Dict
 import gradio as gr
 import shutil
 import json
+import zipfile
 from datetime import datetime
 
 # Configuration des chemins
@@ -91,6 +92,16 @@ class FaceSwapConfig:
         'wav2lip_gan_96',
         'wav2lip_96',
         'edtalk_256'
+    ]
+
+    EXPRESSION_RESTORER_MODELS = [
+        'live_portrait'
+    ]
+
+    EXPRESSION_RESTORER_AREAS = [
+        'All',
+        'upper-face',
+        'lower-face'
     ]
 
     FACE_DETECTOR_SIZES = ['640x640']
@@ -336,6 +347,15 @@ class FaceSwapProcessor:
             cmd.extend(['--lip-syncer-model', config.get('lip_syncer_model', 'wav2lip_gan_96')])
             cmd.extend(['--lip-syncer-weight', '1.0'])
 
+        # Expression restorer
+        if 'expression_restorer' in processors:
+            cmd.extend(['--expression-restorer-model', config.get('expression_restorer_model', 'live_portrait')])
+            cmd.extend(['--expression-restorer-factor', str(config.get('expression_restorer_factor', 80))])
+            if 'expression_restorer_areas' in config:
+                areas = config['expression_restorer_areas']
+                if areas != 'All':
+                    cmd.extend(['--expression-restorer-areas', areas])
+
         # Execution
         cmd.extend([
             '--execution-providers', config.get('execution_provider', 'cpu'),
@@ -351,12 +371,12 @@ class FaceSwapProcessor:
         return cmd
 
     def run_batch_tests(self, source_image: str, target_video: str,
-                       selected_configs: List[str], progress=gr.Progress()) -> Tuple[str, List, str]:
+                       selected_configs: List[str], progress=gr.Progress()) -> Tuple[str, List, str, Optional[str]]:
         """Execute plusieurs configurations et retourne les résultats"""
 
         valid, message = self.validate_inputs(source_image, target_video)
         if not valid:
-            return message, [], ""
+            return message, [], "", None
 
         # Créer dossier de session
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -442,13 +462,18 @@ class FaceSwapProcessor:
 
         progress(1.0, desc="✅ Tests terminés!")
 
-        return summary, video_paths, str(session_dir)
+        # Créer ZIP avec toutes les vidéos
+        zip_path = self.create_batch_zip(str(session_dir))
+
+        return summary, video_paths, str(session_dir), zip_path
 
     def process_video_simple(self, source_image: str, target_video: str,
                             face_swapper_model: str, pixel_boost: str,
                             face_enhancer_enabled: bool, face_enhancer_model: str, face_enhancer_blend: float,
                             frame_enhancer_enabled: bool, frame_enhancer_model: str,
                             lip_sync_enabled: bool, lip_sync_model: str,
+                            expression_restorer_enabled: bool, expression_restorer_model: str,
+                            expression_restorer_factor: float, expression_restorer_areas: str,
                             reference_distance: float, execution_provider: str, quality: int,
                             progress=gr.Progress()) -> Tuple[Optional[str], str, Optional[str]]:
         """Traite une vidéo avec les paramètres simples"""
@@ -472,6 +497,8 @@ class FaceSwapProcessor:
             processors.append('frame_enhancer')
         if lip_sync_enabled:
             processors.append('lip_syncer')
+        if expression_restorer_enabled:
+            processors.append('expression_restorer')
 
         config = {
             'processors': processors,
@@ -491,6 +518,11 @@ class FaceSwapProcessor:
 
         if lip_sync_enabled:
             config['lip_syncer_model'] = lip_sync_model
+
+        if expression_restorer_enabled:
+            config['expression_restorer_model'] = expression_restorer_model
+            config['expression_restorer_factor'] = int(expression_restorer_factor)
+            config['expression_restorer_areas'] = expression_restorer_areas
 
         # Extraction audio si lip sync
         audio_path = None
@@ -532,6 +564,7 @@ class FaceSwapProcessor:
 {'🎤 Lip Sync activé' if lip_sync_enabled else ''}
 {'✨ Face Enhancer activé' if face_enhancer_enabled else ''}
 {'🖼️ Frame Enhancer activé' if frame_enhancer_enabled else ''}
+{'😊 Expression Restorer activé' if expression_restorer_enabled else ''}
 """
                 return output_path, success_msg, output_path
             else:
@@ -542,17 +575,17 @@ class FaceSwapProcessor:
             return None, f"❌ Exception: {str(e)}", None
 
     def run_custom_batch_tests(self, source_image: str, target_video: str,
-                               custom_configs_data: List[Dict], progress=gr.Progress()) -> Tuple[str, List, str]:
+                               custom_configs_data: List[Dict], progress=gr.Progress()) -> Tuple[str, List, str, Optional[str]]:
         """Execute des configurations personnalisées"""
 
         valid, message = self.validate_inputs(source_image, target_video)
         if not valid:
-            return message, [], ""
+            return message, [], "", None
 
         # Filtrer les configs activées
         enabled_configs = [c for c in custom_configs_data if c['enabled']]
         if not enabled_configs:
-            return "❌ Aucune configuration activée !", [], ""
+            return "❌ Aucune configuration activée !", [], "", None
 
         # Créer dossier de session
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -575,6 +608,8 @@ class FaceSwapProcessor:
                 processors.append('frame_enhancer')
             if cfg['use_lip_sync']:
                 processors.append('lip_syncer')
+            if cfg.get('use_expr_rest', False):
+                processors.append('expression_restorer')
 
             config_dict = {
                 'processors': processors,
@@ -594,6 +629,11 @@ class FaceSwapProcessor:
 
             if cfg['use_lip_sync']:
                 config_dict['lip_syncer_model'] = cfg['lip_sync_model']
+
+            if cfg.get('use_expr_rest', False):
+                config_dict['expression_restorer_model'] = cfg['expr_rest_model']
+                config_dict['expression_restorer_factor'] = cfg['expr_rest_factor']
+                config_dict['expression_restorer_areas'] = cfg['expr_rest_areas']
 
             # Extraction audio si lip sync
             audio_path = None
@@ -654,7 +694,38 @@ class FaceSwapProcessor:
 
         progress(1.0, desc="✅ Tests terminés!")
 
-        return summary, video_paths, str(session_dir)
+        # Créer ZIP avec toutes les vidéos
+        zip_path = self.create_batch_zip(str(session_dir))
+
+        return summary, video_paths, str(session_dir), zip_path
+
+    def create_batch_zip(self, session_dir: str) -> Optional[str]:
+        """Crée un fichier ZIP contenant toutes les vidéos du batch"""
+        session_path = Path(session_dir)
+
+        if not session_path.exists():
+            return None
+
+        # Trouver toutes les vidéos MP4
+        video_files = list(session_path.glob("*.mp4"))
+
+        if not video_files:
+            return None
+
+        # Créer le fichier ZIP
+        zip_filename = f"{session_path.name}_all_videos.zip"
+        zip_path = session_path / zip_filename
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for video_file in video_files:
+                zipf.write(video_file, video_file.name)
+
+            # Ajouter results.json s'il existe
+            results_file = session_path / 'results.json'
+            if results_file.exists():
+                zipf.write(results_file, 'results.json')
+
+        return str(zip_path)
 
 
 # Instance globale
@@ -723,6 +794,20 @@ def create_gradio_interface():
                             label="Lip Sync Model"
                         )
 
+                        # Expression Restorer
+                        simple_expression_restorer_enable = gr.Checkbox(label="Activer Expression Restorer", value=False)
+                        simple_expression_restorer_model = gr.Dropdown(
+                            choices=FaceSwapConfig.EXPRESSION_RESTORER_MODELS,
+                            value='live_portrait',
+                            label="Expression Restorer Model"
+                        )
+                        simple_expression_restorer_factor = gr.Slider(0, 100, value=80, label="Expression Restorer Factor")
+                        simple_expression_restorer_areas = gr.Dropdown(
+                            choices=FaceSwapConfig.EXPRESSION_RESTORER_AREAS,
+                            value='All',
+                            label="Expression Restorer Areas"
+                        )
+
                         # Autres
                         simple_reference_distance = gr.Slider(0.0, 1.0, value=0.6, step=0.05, label="Reference Face Distance")
                         simple_execution_provider = gr.Radio(
@@ -734,9 +819,11 @@ def create_gradio_interface():
 
                 simple_btn = gr.Button("🚀 Lancer Face Swap", variant="primary", size="lg")
 
+                # Résultats
+                simple_output_msg = gr.Textbox(label="Status", lines=3)
+
                 with gr.Row():
-                    simple_output_video = gr.Video(label="📹 Résultat", height=300)
-                    simple_output_msg = gr.Textbox(label="Status", lines=10)
+                    simple_output_video = gr.Video(label="📹 Prévisualisation", height=400, width=400)
 
                 simple_download_btn = gr.File(label="💾 Télécharger la vidéo", interactive=False)
 
@@ -768,10 +855,11 @@ def create_gradio_interface():
 
                             with gr.Column(scale=2):
                                 gr.Markdown("### 📊 Résultats")
-                                batch_predefined_summary = gr.Textbox(label="Résumé", lines=8)
-                                batch_predefined_gallery = gr.Gallery(label="📹 Vidéos", columns=3, height=400)
-                                batch_predefined_player = gr.Video(label="🎬 Lecteur", interactive=False, height=300)
-                                batch_predefined_path = gr.Textbox(label="📂 Dossier", interactive=False)
+                                batch_predefined_summary = gr.Textbox(label="Résumé", lines=5)
+                                batch_predefined_gallery = gr.Gallery(label="📹 Vidéos (cliquer pour prévisualiser)", columns=4, height=300, object_fit="contain")
+                                batch_predefined_player = gr.Video(label="🎬 Lecteur", interactive=False, height=350, width=350)
+                                batch_predefined_path = gr.Textbox(label="📂 Dossier", interactive=False, lines=1)
+                                batch_predefined_zip_btn = gr.File(label="📦 Télécharger toutes les vidéos (ZIP)", interactive=False)
 
                     # ========== Configs Personnalisées ==========
                     with gr.Tab("⚙️ Configs Personnalisées"):
@@ -799,6 +887,10 @@ def create_gradio_interface():
                             with gr.Accordion(f"Configuration {i+1}", open=(i == 0), visible=(i < 3)) as accordion:
                                 with gr.Row():
                                     cc_enabled = gr.Checkbox(label=f"Activer Config {i+1}", value=(i < 2))
+                                    if i < 14:  # Pas de duplication pour la dernière config
+                                        cc_duplicate_btn = gr.Button(f"📋 Dupliquer vers Config {i+2}", size="sm", variant="secondary")
+                                    else:
+                                        cc_duplicate_btn = None
 
                                 with gr.Row():
                                     with gr.Column():
@@ -834,8 +926,20 @@ def create_gradio_interface():
                                             value='wav2lip_gan_96',
                                             label="Lip Sync Model"
                                         )
+                                        cc_use_expr_rest = gr.Checkbox(label="Expression Restorer", value=False)
+                                        cc_expr_rest_model = gr.Dropdown(
+                                            choices=FaceSwapConfig.EXPRESSION_RESTORER_MODELS,
+                                            value='live_portrait',
+                                            label="Expr. Rest. Model"
+                                        )
 
                                     with gr.Column():
+                                        cc_expr_rest_factor = gr.Slider(0, 100, value=80, label="Expr. Rest. Factor")
+                                        cc_expr_rest_areas = gr.Dropdown(
+                                            choices=FaceSwapConfig.EXPRESSION_RESTORER_AREAS,
+                                            value='All',
+                                            label="Expr. Rest. Areas"
+                                        )
                                         cc_distance = gr.Slider(0.0, 1.0, value=0.6, step=0.05, label="Ref. Distance")
                                         cc_quality = gr.Slider(0, 100, value=90, label="Quality")
                                         cc_exec_provider = gr.Radio(
@@ -846,6 +950,7 @@ def create_gradio_interface():
 
                                 custom_configs_list.append({
                                     'accordion': accordion,
+                                    'duplicate_btn': cc_duplicate_btn,
                                     'enabled': cc_enabled,
                                     'name': cc_name,
                                     'face_swapper': cc_face_swapper,
@@ -857,6 +962,10 @@ def create_gradio_interface():
                                     'frame_enh_model': cc_frame_enh_model,
                                     'use_lip_sync': cc_use_lip_sync,
                                     'lip_sync_model': cc_lip_sync_model,
+                                    'use_expr_rest': cc_use_expr_rest,
+                                    'expr_rest_model': cc_expr_rest_model,
+                                    'expr_rest_factor': cc_expr_rest_factor,
+                                    'expr_rest_areas': cc_expr_rest_areas,
                                     'distance': cc_distance,
                                     'quality': cc_quality,
                                     'exec_provider': cc_exec_provider
@@ -867,11 +976,12 @@ def create_gradio_interface():
                         # Résultats personnalisés
                         with gr.Row():
                             with gr.Column():
-                                custom_summary = gr.Textbox(label="Résumé", lines=8)
+                                custom_summary = gr.Textbox(label="Résumé", lines=5)
                             with gr.Column(scale=2):
-                                custom_gallery = gr.Gallery(label="📹 Vidéos", columns=3, height=400)
-                                custom_player = gr.Video(label="🎬 Lecteur", interactive=False, height=300)
-                                custom_path = gr.Textbox(label="📂 Dossier", interactive=False)
+                                custom_gallery = gr.Gallery(label="📹 Vidéos (cliquer pour prévisualiser)", columns=4, height=300, object_fit="contain")
+                                custom_player = gr.Video(label="🎬 Lecteur", interactive=False, height=350, width=350)
+                                custom_path = gr.Textbox(label="📂 Dossier", interactive=False, lines=1)
+                                custom_zip_btn = gr.File(label="📦 Télécharger toutes les vidéos (ZIP)", interactive=False)
 
         # Footer
         gr.Markdown("""
@@ -889,12 +999,14 @@ def create_gradio_interface():
 
         def run_custom_tests_wrapper(source, target, *config_values):
             """Wrapper pour collecter les valeurs des 15 configs et lancer les tests"""
-            # config_values contient 14 valeurs par config (15 configs = 210 valeurs)
+            # config_values contient 18 valeurs par config (15 configs = 270 valeurs)
             # enabled, name, face_swapper, pixel_boost, use_face_enh, face_enh_model, face_enh_blend,
-            # use_frame_enh, frame_enh_model, use_lip_sync, lip_sync_model, distance, quality, exec_provider
+            # use_frame_enh, frame_enh_model, use_lip_sync, lip_sync_model,
+            # use_expr_rest, expr_rest_model, expr_rest_factor, expr_rest_areas,
+            # distance, quality, exec_provider
 
             configs_data = []
-            num_fields = 14
+            num_fields = 18
             for i in range(15):
                 offset = i * num_fields
                 configs_data.append({
@@ -909,9 +1021,13 @@ def create_gradio_interface():
                     'frame_enh_model': config_values[offset + 8],
                     'use_lip_sync': config_values[offset + 9],
                     'lip_sync_model': config_values[offset + 10],
-                    'distance': config_values[offset + 11],
-                    'quality': config_values[offset + 12],
-                    'exec_provider': config_values[offset + 13]
+                    'use_expr_rest': config_values[offset + 11],
+                    'expr_rest_model': config_values[offset + 12],
+                    'expr_rest_factor': config_values[offset + 13],
+                    'expr_rest_areas': config_values[offset + 14],
+                    'distance': config_values[offset + 15],
+                    'quality': config_values[offset + 16],
+                    'exec_provider': config_values[offset + 17]
                 })
 
             return processor.run_custom_batch_tests(source, target, configs_data)
@@ -931,6 +1047,8 @@ def create_gradio_interface():
                 simple_face_enhancer_enable, simple_face_enhancer, simple_face_enhancer_blend,
                 simple_frame_enhancer_enable, simple_frame_enhancer,
                 simple_lip_sync_enable, simple_lip_sync_model,
+                simple_expression_restorer_enable, simple_expression_restorer_model,
+                simple_expression_restorer_factor, simple_expression_restorer_areas,
                 simple_reference_distance, simple_execution_provider, simple_quality
             ],
             outputs=[simple_output_video, simple_output_msg, simple_download_btn]
@@ -939,7 +1057,14 @@ def create_gradio_interface():
         batch_predefined_btn.click(
             fn=processor.run_batch_tests,
             inputs=[batch_source, batch_target, batch_predefined_configs],
-            outputs=[batch_predefined_summary, batch_predefined_gallery, batch_predefined_path]
+            outputs=[batch_predefined_summary, batch_predefined_gallery, batch_predefined_path, batch_predefined_zip_btn]
+        )
+
+        # Clic sur galerie → affiche dans lecteur
+        batch_predefined_gallery.select(
+            fn=lambda evt: evt[0] if evt and len(evt) > 0 else None,
+            inputs=[batch_predefined_gallery],
+            outputs=[batch_predefined_player]
         )
 
         # Collecter tous les inputs des configs personnalisées
@@ -949,15 +1074,49 @@ def create_gradio_interface():
                 cfg_dict['enabled'], cfg_dict['name'], cfg_dict['face_swapper'],
                 cfg_dict['pixel_boost'], cfg_dict['use_face_enh'], cfg_dict['face_enh_model'],
                 cfg_dict['face_enh_blend'], cfg_dict['use_frame_enh'], cfg_dict['frame_enh_model'],
-                cfg_dict['use_lip_sync'], cfg_dict['lip_sync_model'], cfg_dict['distance'],
-                cfg_dict['quality'], cfg_dict['exec_provider']
+                cfg_dict['use_lip_sync'], cfg_dict['lip_sync_model'],
+                cfg_dict['use_expr_rest'], cfg_dict['expr_rest_model'],
+                cfg_dict['expr_rest_factor'], cfg_dict['expr_rest_areas'],
+                cfg_dict['distance'], cfg_dict['quality'], cfg_dict['exec_provider']
             ])
 
         custom_launch_btn.click(
             fn=run_custom_tests_wrapper,
             inputs=custom_inputs,
-            outputs=[custom_summary, custom_gallery, custom_path]
+            outputs=[custom_summary, custom_gallery, custom_path, custom_zip_btn]
         )
+
+        # Clic sur galerie → affiche dans lecteur
+        custom_gallery.select(
+            fn=lambda evt: evt[0] if evt and len(evt) > 0 else None,
+            inputs=[custom_gallery],
+            outputs=[custom_player]
+        )
+
+        # Handlers pour les boutons de duplication
+        for i in range(14):  # 0 à 13 (pas de duplication pour config 15)
+            if custom_configs_list[i]['duplicate_btn'] is not None:
+                def create_duplicate_handler(src_idx, dst_idx):
+                    def duplicate_config(*values):
+                        # src_idx config vers dst_idx config
+                        # Retourner les valeurs de src copiées vers dst
+                        num_fields = 18
+                        src_offset = src_idx * num_fields
+
+                        # Extraire les valeurs sources (skip enabled, garder name mais modifié)
+                        src_values = list(values[src_offset:src_offset + num_fields])
+
+                        # Modifier le nom pour dst
+                        src_values[1] = f"custom_{dst_idx+1}_copy"  # name field
+
+                        return tuple(src_values)
+                    return duplicate_config
+
+                custom_configs_list[i]['duplicate_btn'].click(
+                    fn=create_duplicate_handler(i, i+1),
+                    inputs=[cfg_dict[field] for cfg_dict in custom_configs_list for field in ['enabled', 'name', 'face_swapper', 'pixel_boost', 'use_face_enh', 'face_enh_model', 'face_enh_blend', 'use_frame_enh', 'frame_enh_model', 'use_lip_sync', 'lip_sync_model', 'use_expr_rest', 'expr_rest_model', 'expr_rest_factor', 'expr_rest_areas', 'distance', 'quality', 'exec_provider']],
+                    outputs=[custom_configs_list[i+1][field] for field in ['enabled', 'name', 'face_swapper', 'pixel_boost', 'use_face_enh', 'face_enh_model', 'face_enh_blend', 'use_frame_enh', 'frame_enh_model', 'use_lip_sync', 'lip_sync_model', 'use_expr_rest', 'expr_rest_model', 'expr_rest_factor', 'expr_rest_areas', 'distance', 'quality', 'exec_provider']]
+                )
 
     return app
 

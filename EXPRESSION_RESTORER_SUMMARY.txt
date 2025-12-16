@@ -1,0 +1,44 @@
+========================================
+🎬 EXPRESSION RESTORER - AJOUTÉ À V3
+========================================
+
+✅ AJOUTÉ PARTOUT:
+- Face Swap Simple
+- Configs Personnalisées (15 configs)
+
+📋 NOUVEAUX PARAMÈTRES:
+1. Activer Expression Restorer (checkbox)
+2. Model: live_portrait
+3. Factor: 0-100 (défaut 80)
+4. Areas: All / upper-face / lower-face
+
+🔧 UTILISATION:
+1. Cocher "Activer Expression Restorer"
+2. Ajuster Factor (plus haut = plus d'expression)
+3. Choisir Areas selon besoin
+4. Lancer traitement
+
+💡 CAS D'USAGE:
+- Factor 80, Areas "All" → Usage général
+- Factor 100, Areas "lower-face" → Préserver mouvements bouche
+- Factor 85, Areas "upper-face" → Focus sur regard
+
+⚙️ COMMANDE CLI GÉNÉRÉE:
+--processors ... expression_restorer
+--expression-restorer-model live_portrait
+--expression-restorer-factor 80
+--expression-restorer-areas [All/upper-face/lower-face]
+
+📊 ORDRE DE TRAITEMENT:
+1. face_swapper
+2. face_enhancer
+3. expression_restorer ← NOUVEAU
+4. frame_enhancer
+5. lip_syncer
+
+✅ CODE COMPILE SANS ERREUR
+✅ DOCUMENTATION COMPLÈTE: EXPRESSION_RESTORER_UPDATE.md
+
+🚀 LANCER V3:
+cd "/Users/martinemenguy/Desktop/for facefusion"
+python3 actor_faceswap_studio_v3.py
