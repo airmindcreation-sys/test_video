@@ -88,6 +88,11 @@ class FaceSwapConfig:
         'region': 'Région personnalisée'
     }
 
+    LIP_SYNC_MODELS = {
+        'wav2lip_gan': 'Wav2Lip GAN - Haute qualité',
+        'wav2lip': 'Wav2Lip - Standard'
+    }
+
 
 class FaceSwapProcessor:
     """Gestionnaire du traitement de face swap"""
@@ -127,6 +132,9 @@ class FaceSwapProcessor:
         mask_types: List[str],
         mask_blur: float,
         execution_provider: str,
+        lip_sync_enabled: bool,
+        lip_sync_model: str,
+        lip_sync_weight: float,
         progress=gr.Progress()
     ) -> Tuple[Optional[str], str]:
         """
@@ -174,6 +182,12 @@ class FaceSwapProcessor:
                 config['processors'].append('face_enhancer')
                 config['face_enhancer_model'] = 'gfpgan_1.4'
                 config['face_enhancer_blend'] = 80
+
+            # Ajouter lip_syncer si activé (TOUJOURS APRÈS face_swapper)
+            if lip_sync_enabled:
+                config['processors'].append('lip_syncer')
+                config['lip_syncer_model'] = lip_sync_model
+                config['lip_syncer_weight'] = lip_sync_weight
 
             progress(0.3, desc="🎭 Initialisation des processeurs...")
 
@@ -345,7 +359,7 @@ def create_gradio_interface():
                 # Paramètres avancés (repliables)
                 with gr.Accordion("🔧 Paramètres avancés (optionnel)", open=False):
                     model_dropdown = gr.Dropdown(
-                        choices=list(FaceSwapConfig.MODELS.items()),
+                        choices=list(FaceSwapConfig.MODELS.keys()),
                         value='inswapper_128',
                         label="Modèle de face swap",
                         info="Algorithme de remplacement de visage"
@@ -373,8 +387,32 @@ def create_gradio_interface():
                         info="Améliore la qualité du visage swappé (recommandé)"
                     )
 
+                    gr.Markdown("#### 🎤 Synchronisation labiale (Lip Sync)")
+
+                    lip_sync_enabled = gr.Checkbox(
+                        label="✅ Activer le Lip Sync (synchroniser les lèvres avec l'audio)",
+                        value=True,
+                        info="RECOMMANDÉ si l'acteur parle dans la vidéo"
+                    )
+
+                    lip_sync_model = gr.Dropdown(
+                        choices=list(FaceSwapConfig.LIP_SYNC_MODELS.keys()),
+                        value='wav2lip_gan',
+                        label="Modèle de Lip Sync",
+                        info="Wav2Lip GAN = meilleure qualité, plus lent"
+                    )
+
+                    lip_sync_weight = gr.Slider(
+                        minimum=0.5,
+                        maximum=1.0,
+                        value=0.9,
+                        step=0.05,
+                        label="Intensité du Lip Sync",
+                        info="Force de la synchronisation (0.5 = subtil, 1.0 = complet)"
+                    )
+
                     mask_types = gr.CheckboxGroup(
-                        choices=list(FaceSwapConfig.MASK_TYPES.items()),
+                        choices=list(FaceSwapConfig.MASK_TYPES.keys()),
                         value=['occlusion'],
                         label="Types de masques",
                         info="Zones à inclure dans le swap"
@@ -494,7 +532,10 @@ def create_gradio_interface():
                 face_enhancer,
                 mask_types,
                 mask_blur,
-                execution_provider
+                execution_provider,
+                lip_sync_enabled,
+                lip_sync_model,
+                lip_sync_weight
             ],
             outputs=[output_video, status_text]
         )

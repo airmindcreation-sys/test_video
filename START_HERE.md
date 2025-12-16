@@ -25,7 +25,7 @@ Une application **complète, intuitive et professionnelle** pour remplacer le vi
 ```bash
 # 1. Installer FaceFusion (inclut toutes les dépendances)
 cd facefusion
-python install.py
+python install.py --onnxruntime default
 cd ..
 
 # 2. Installer Gradio pour l'interface
