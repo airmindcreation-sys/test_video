@@ -121,6 +121,7 @@ class FaceSwapProcessor:
         source_path: str,
         target_path: str,
         output_path: str,
+        audio_path: Optional[str],
         face_swapper_model: str,
         pixel_boost: str,
         face_enhancer: bool,
@@ -138,11 +139,22 @@ class FaceSwapProcessor:
         cmd = [
             'python3',
             str(self.facefusion_script),
-            'run',  # Utiliser 'run' au lieu de 'headless-run'
-            '--source-paths', source_path,
+            'headless-run',  # Mode headless pour automatisation
+        ]
+
+        # Source paths: image + audio (si lip sync activé)
+        if audio_path:
+            # Audio + Image dans --source-paths (ordre important)
+            cmd.extend(['--source-paths', audio_path, source_path])
+        else:
+            # Juste l'image
+            cmd.extend(['--source-paths', source_path])
+
+        # Target et output
+        cmd.extend([
             '--target-path', target_path,
             '--output-path', output_path,
-        ]
+        ])
 
         # Processeurs (l'ordre est important)
         processors = ['face_swapper']
@@ -169,7 +181,8 @@ class FaceSwapProcessor:
         # Reference face distance (PARAMÈTRE CLÉ pour ressemblance)
         cmd.extend([
             '--reference-face-distance', str(reference_face_distance),
-            '--face-selector-mode', 'reference'
+            '--face-selector-mode', 'reference',
+            '--face-selector-order', 'large-small'
         ])
 
         # Face enhancer options (avec modèle configurable)
@@ -182,7 +195,8 @@ class FaceSwapProcessor:
         # Lip sync options
         if lip_sync_enabled:
             cmd.extend([
-                '--lip-syncer-model', lip_sync_model
+                '--lip-syncer-model', lip_sync_model,
+                '--lip-syncer-weight', '1.0'
             ])
 
         # Execution
@@ -198,6 +212,67 @@ class FaceSwapProcessor:
         ])
 
         return cmd
+
+    def extract_audio(self, target_video_path: str) -> Tuple[bool, Optional[str]]:
+        """Extrait la piste audio en WAV pour le lip syncer"""
+
+        audio_output = TEMP_DIR / f"{Path(target_video_path).stem}_audio.wav"
+
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', target_video_path,
+            '-vn',
+            '-ac', '1',
+            '-ar', '44100',
+            str(audio_output)
+        ]
+
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+        except subprocess.CalledProcessError as exc:
+            print(f"❌ Extraction audio échouée: {exc.stderr}")
+            return False, None
+
+        if not audio_output.exists() or audio_output.stat().st_size == 0:
+            print("❌ Extraction audio échouée: fichier vide")
+            return False, None
+
+        return True, str(audio_output)
+
+    def merge_audio_into_video(self, video_path: str, audio_path: str) -> Tuple[bool, str]:
+        """Relie l'audio traité à la vidéo finale pour le téléchargement"""
+
+        merged_path = TEMP_DIR / f"{Path(video_path).stem}_with_audio.mp4"
+
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', video_path,
+            '-i', audio_path,
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-shortest',
+            str(merged_path)
+        ]
+
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+        except subprocess.CalledProcessError as exc:
+            print(f"❌ Fusion audio/vidéo échouée: {exc.stderr}")
+            return False, video_path
+
+        # Remplacer le fichier original par la version avec audio
+        shutil.move(str(merged_path), video_path)
+        return True, video_path
 
     def process_video(
         self,
@@ -235,13 +310,23 @@ class FaceSwapProcessor:
             output_filename = f"faceswap_{Path(target_video_path).stem}_{preset}.mp4"
             output_path = str(OUTPUTS_DIR / output_filename)
 
-            progress(0.2, desc="⚙️ Construction de la commande...")
+            # Extraction audio si lip sync activé
+            audio_path: Optional[str] = None
+            if lip_sync_enabled:
+                progress(0.25, desc="🎵 Extraction de l'audio pour le lip sync...")
+                ok, extracted_audio = self.extract_audio(target_video_path)
+                if not ok or not extracted_audio:
+                    return None, "❌ Échec de l'extraction audio pour le lip sync. Vérifiez que la vidéo contient une piste audio."
+                audio_path = extracted_audio
+
+            progress(0.35, desc="⚙️ Construction de la commande...")
 
             # Construire la commande
             cmd = self.build_command(
                 source_image_path,
                 target_video_path,
                 output_path,
+                audio_path,
                 face_swapper_model,
                 pixel_boost,
                 face_enhancer,
@@ -258,7 +343,7 @@ class FaceSwapProcessor:
             print(f"\n🚀 Commande FaceFusion:")
             print(f"   {' '.join(cmd)}\n")
 
-            progress(0.3, desc="🎬 Lancement du traitement FaceFusion...")
+            progress(0.45, desc="🎬 Lancement du traitement FaceFusion...")
 
             # Lancer la commande
             process = subprocess.Popen(
@@ -270,12 +355,12 @@ class FaceSwapProcessor:
             )
 
             # Lire la sortie en temps réel
-            progress(0.4, desc="🎭 Traitement en cours...")
+            progress(0.55, desc="🎭 Traitement en cours...")
             for line in process.stdout:
                 print(line.rstrip())
                 # Mise à jour de la progression basée sur les logs
                 if 'Processing' in line or 'Extracting' in line:
-                    progress(0.5, desc="🎬 Traitement des frames...")
+                    progress(0.65, desc="🎬 Traitement des frames...")
                 elif 'Merging' in line or 'Encoding' in line:
                     progress(0.8, desc="🎥 Encodage de la vidéo...")
 
@@ -290,6 +375,13 @@ class FaceSwapProcessor:
             # Vérifier que le fichier de sortie existe
             if not os.path.exists(output_path):
                 return None, "❌ Le fichier de sortie n'a pas été créé"
+
+            # Fusion audio si lip sync était activé
+            if lip_sync_enabled and audio_path:
+                progress(0.92, desc="🔊 Fusion de l'audio final...")
+                merged, output_path = self.merge_audio_into_video(output_path, audio_path)
+                if not merged:
+                    return None, "❌ Fusion audio/vidéo échouée. Consultez les logs."
 
             file_size = os.path.getsize(output_path) / (1024 * 1024)  # MB
 
