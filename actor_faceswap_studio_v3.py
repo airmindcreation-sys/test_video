@@ -293,6 +293,87 @@ class FaceSwapProcessor:
         shutil.move(str(merged_path), video_path)
         return True, video_path
 
+    def optimize_for_imovie(self, video_path: str) -> Tuple[bool, str, float]:
+        """Optimise la vidéo pour iMovie et réduit la taille du fichier
+
+        Args:
+            video_path: Chemin vers la vidéo à optimiser
+
+        Returns:
+            Tuple[bool, str, float]: (succès, chemin_optimisé, réduction_pourcentage)
+        """
+        original_size = os.path.getsize(video_path) / (1024 * 1024)  # MB
+
+        # Chemin temporaire pour la vidéo optimisée
+        optimized_path = TEMP_DIR / f"{Path(video_path).stem}_optimized.mp4"
+
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', video_path,
+            '-map', '0:v:0',  # Video stream
+        ]
+
+        # Ajouter audio si disponible
+        cmd.extend(['-map', '0:a:0?'])  # Audio stream (optionnel)
+
+        # Encodage vidéo optimisé pour iMovie
+        cmd.extend([
+            '-c:v', 'libx264',
+            '-profile:v', 'high',
+            '-level', '4.2',
+            '-pix_fmt', 'yuv420p',
+            '-vf', 'fps=24',  # 24 fps constant
+            '-vsync', 'cfr',  # Constant frame rate
+            '-g', '48',  # GOP size (2 secondes à 24fps)
+            '-preset', 'medium',  # Équilibre qualité/vitesse
+            '-crf', '23',  # Qualité (18-28, 23 = bon équilibre)
+        ])
+
+        # Encodage audio
+        cmd.extend([
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-ar', '48000',
+            '-af', 'aresample=async=1:first_pts=0',
+        ])
+
+        # Optimisations
+        cmd.extend([
+            '-movflags', '+faststart',  # Métadonnées au début pour streaming
+            str(optimized_path)
+        ])
+
+        print(f"\n🔧 Optimisation vidéo pour iMovie...")
+        print(f"   Taille originale: {original_size:.2f} MB")
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+
+            if result.returncode != 0:
+                print(f"❌ Optimisation échouée: {result.stderr[:200]}")
+                return False, video_path, 0.0
+
+            if not optimized_path.exists():
+                return False, video_path, 0.0
+
+            # Remplacer l'originale par l'optimisée
+            optimized_size = os.path.getsize(optimized_path) / (1024 * 1024)
+            reduction = ((original_size - optimized_size) / original_size) * 100
+
+            shutil.move(str(optimized_path), video_path)
+
+            print(f"   ✅ Taille optimisée: {optimized_size:.2f} MB")
+            print(f"   📉 Réduction: {reduction:.1f}%")
+
+            return True, video_path, reduction
+
+        except subprocess.TimeoutExpired:
+            print("❌ Optimisation timeout (>10 min)")
+            return False, video_path, 0.0
+        except Exception as e:
+            print(f"❌ Erreur optimisation: {str(e)}")
+            return False, video_path, 0.0
+
     def build_command(self, config: Dict, source_path: str, target_path: str,
                      output_path: str, audio_path: Optional[str] = None) -> list:
         """Construit la commande FaceFusion à partir d'une configuration"""
@@ -423,13 +504,23 @@ class FaceSwapProcessor:
                     if audio_path:
                         self.merge_audio_into_video(output_path, audio_path)
 
+                    # Optimisation pour iMovie
+                    progress((i / total) + 0.05, desc=f"🔧 Optimisation iMovie {i+1}/{total}")
+                    success, optimized_path, reduction = self.optimize_for_imovie(output_path)
+
                     file_size = os.path.getsize(output_path) / (1024 * 1024)
-                    results.append({
+                    result_data = {
                         'config': config_name,
                         'status': 'success',
                         'path': output_path,
                         'size_mb': f"{file_size:.2f}"
-                    })
+                    }
+
+                    if success and reduction > 0:
+                        result_data['optimized'] = True
+                        result_data['size_reduction'] = f"{reduction:.1f}%"
+
+                    results.append(result_data)
                     video_paths.append((output_path, config_name))
                 else:
                     results.append({
@@ -660,13 +751,23 @@ class FaceSwapProcessor:
                     if audio_path:
                         self.merge_audio_into_video(output_path, audio_path)
 
+                    # Optimisation pour iMovie
+                    progress((i / total) + 0.05, desc=f"🔧 Optimisation iMovie {i+1}/{total}")
+                    success, optimized_path, reduction = self.optimize_for_imovie(output_path)
+
                     file_size = os.path.getsize(output_path) / (1024 * 1024)
-                    results.append({
+                    result_data = {
                         'config': config_name,
                         'status': 'success',
                         'path': output_path,
                         'size_mb': f"{file_size:.2f}"
-                    })
+                    }
+
+                    if success and reduction > 0:
+                        result_data['optimized'] = True
+                        result_data['size_reduction'] = f"{reduction:.1f}%"
+
+                    results.append(result_data)
                     video_paths.append((output_path, config_name))
                 else:
                     results.append({
